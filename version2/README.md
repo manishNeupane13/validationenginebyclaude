@@ -98,3 +98,11 @@ Add a field by editing `schema.py`. Add a rule by returning `Issue` objects and 
 - SQLite suits one user or a small team. Move `store.py` to PostgreSQL for shared production use.
 - The Cogoeld/ELD connector is not written because there is no API detail yet; export to CSV and use the Excel connector,
   or copy `connectors/samsara.py` as a template.
+
+## Multi-source comparison
+
+Open **Checks & tools → Multi-source comparison**. Select synced tables or upload two or more CSV, TSV, or XLSX exports. For Excel files choose a sheet, then select one identifying column per table. Use **Fields to compare** to map equivalent columns, such as `Cost` and `Total`, to one shared field. Choose which sources are expected to contain the records. Keys and mapped values use exact text after trimming whitespace. Duplicate and blank keys produce review findings.
+
+**Save setup** stores mappings in the app database. Select the saved setup and provide any local files again with the same filenames and sheet names. **Run comparison** generates searchable coverage and evidence tables. The ZIP download includes both CSVs and run metadata. Recent runs retain metadata. Download a report to keep the detailed evidence beyond the session.
+
+For optional AI summaries, configure your approved OpenAI-compatible endpoint and model under **Review queue → AI model settings**. Enter the API key there if needed. The key lasts for the session. ChatGPT workspace access alone does not provide API credentials. The multi-source AI summary sends only aggregate counts and can be included in the downloaded report.

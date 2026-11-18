@@ -7,6 +7,7 @@ from dqp.ui import pages
 from dqp.ui.datasets import datasets_page
 from dqp.ui.common import store
 from dqp.ui.design import apply_theme
+from dqp.ui.reconciliation import reconciliation_page
 
 st.set_page_config(page_title="Fleet data check", layout="wide", initial_sidebar_state="expanded")
 apply_theme()
@@ -26,6 +27,7 @@ tools = [
     st.Page(pages.issues_page, title="Issues", url_path="issues"),
     st.Page(pages.review_page, title="Review queue", url_path="review"),
     st.Page(pages.compare_page, title="Compare records", url_path="compare"),
+    st.Page(reconciliation_page, title="Multi-source comparison", url_path="reconciliation"),
     st.Page(datasets_page, title="Compare datasets", url_path="datasets"),
     st.Page(pages.find_page, title="Find & look up", url_path="find"),
     st.Page(pages.coverage_page, title="Coverage", url_path="coverage"),
