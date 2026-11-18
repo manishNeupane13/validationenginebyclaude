@@ -37,3 +37,19 @@ def test_keys_only_and_empty_tables():
     coverage, findings = reconcile(tables, keys, {}, ["A", "B"])
     assert coverage.Status.tolist() == ["Present · keys only", "Missing from expected sources"]
     assert findings.Source.tolist() == ["B"]
+
+
+def test_source_metadata_includes_schema_and_key_quality():
+    from dqp.reconciliation import source_metadata
+
+    tables = {"Export": pd.DataFrame({"ID": ["01", " 01 ", ""], "Label": ["A", "A", "B"]})}
+    metadata = source_metadata(tables, {"Export": "ID"}, {"Name": {"Export": "Label"}},
+                               {"Export": {"input_type": "upload", "filename": "items.csv"}}, ["Export"])
+    source = metadata["Export"]
+    assert source["filename"] == "items.csv"
+    assert source["expected"] is True
+    assert (source["blank_key_rows"], source["duplicate_key_rows"], source["duplicate_keys"]) == (1, 2, 1)
+    assert source["mapped_fields"] == {"Name": "Label"}
+    assert [(column["name"], column["distinct_nonblank"]) for column in source["columns"]] == [
+        ("ID", 1), ("Label", 2)
+    ]

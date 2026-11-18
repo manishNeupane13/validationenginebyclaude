@@ -65,6 +65,38 @@ def reconcile(tables, keys, fields, expected=None):
             pd.DataFrame(findings, columns=FINDING_COLUMNS))
 
 
+def source_metadata(tables, keys, fields, details, expected):
+    """Describe the input schema and key quality without retaining raw row values."""
+    metadata = {}
+    for name, frame in tables.items():
+        key_column = keys[name]
+        ids = clean_values(frame[key_column])
+        present = ids.dropna()
+        duplicates = present.duplicated(keep=False)
+        columns = []
+        for column in frame:
+            values = clean_values(frame[column])
+            columns.append({
+                "name": column,
+                "stored_type": str(frame[column].dtype),
+                "blank_rows": int(values.isna().sum()),
+                "distinct_nonblank": int(values.nunique()),
+            })
+        metadata[name] = {
+            **details[name],
+            "expected": name in expected,
+            "input_rows": len(frame),
+            "columns": columns,
+            "record_key": key_column,
+            "blank_key_rows": int(ids.isna().sum()),
+            "distinct_nonblank_keys": int(present.nunique()),
+            "duplicate_key_rows": int(duplicates.sum()),
+            "duplicate_keys": int(present[duplicates].nunique()),
+            "mapped_fields": {field: mapping[name] for field, mapping in fields.items() if mapping.get(name)},
+        }
+    return metadata
+
+
 def report_zip(metadata, coverage, findings, narrative=None):
     output = BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as report:

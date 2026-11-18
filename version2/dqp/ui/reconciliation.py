@@ -5,31 +5,39 @@ from zipfile import BadZipFile
 from hashlib import sha256
 from io import BytesIO
 import json
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
 
 from ..llm import make_client
 from ..llm.tasks import write_report
-from ..reconciliation import reconcile, report_zip
+from ..reconciliation import reconcile, report_zip, source_metadata
 from .common import store
 from .design import header
 
 
 def _inputs(database, preset, scope):
     tables, details = {}, {}
-    platforms = {row["name"] for row in database.sources()}
+    platforms = {row["name"]: row["kind"] for row in database.sources()}
     snapshots = {f"{row.source} › {row.entity}": row for row in database.latest_snapshots().itertuples()
                  if row.source in platforms}
     for name in st.multiselect("Synced tables", list(snapshots), default=[name for name in preset.get("keys", {}) if name in snapshots],
                                key=f"{scope}:sources"):
         row = snapshots[name]
-        frame = database.rows(row.source, row.entity).drop(columns=["_key"], errors="ignore")
+        frame = database.rows(row.source, row.entity, snapshot_id=row.id).drop(columns=["_key"], errors="ignore")
         if frame.empty and not len(frame.columns):
-            meta = database.snapshot_meta(row.source, row.entity)
+            meta = json.loads(row.meta or "{}")
             frame = pd.DataFrame(columns=meta.get("fetched_columns", []))
         tables[name] = frame
-        details[name] = {"snapshot": row.id, "fetched_at": row.fetched_at, "rows": len(frame)}
+        details[name] = {
+            "input_type": "synced",
+            "connector": platforms[row.source],
+            "platform": row.source,
+            "table": row.entity,
+            "snapshot_id": row.id,
+            "fetched_at": row.fetched_at,
+        }
     uploads = st.file_uploader("Add local exports", type=["csv", "tsv", "xlsx"], accept_multiple_files=True, key=f"{scope}:uploads")
     used = set()
     for upload in uploads:
@@ -49,7 +57,14 @@ def _inputs(database, preset, scope):
                 frame = pd.read_csv(BytesIO(data), sep=separator, dtype=str, keep_default_na=False)
                 name = f"File › {upload.name}"
             tables[name] = frame
-            details[name] = {"file_sha256": sha256(data).hexdigest(), "rows": len(frame)}
+            details[name] = {
+                "input_type": "upload",
+                "filename": upload.name,
+                "format": upload.name.rsplit(".", 1)[-1].lower(),
+                "sheet": sheet if upload.name.lower().endswith(".xlsx") else None,
+                "file_sha256": sha256(data).hexdigest(),
+                "size_bytes": len(data),
+            }
         except (BadZipFile, ValueError, OSError, ImportError) as error:
             st.error(f"Cannot read {upload.name}. {error}")
             return {}, {}
@@ -102,13 +117,25 @@ def _show_report(database, run, scope):
     for column, label in zip(row, ("Values agree", "Missing from expected sources", "Value differences", "Needs review")):
         column.metric(label, counts.get(label, 0))
     st.caption(f"Run {metadata['run_at']} · {len(coverage):,} distinct keys · {len(findings):,} evidence rows")
-    records_tab, findings_tab, ai_tab = st.tabs(["Record coverage", "Findings", "AI summary"])
+    records_tab, findings_tab, metadata_tab, ai_tab = st.tabs(
+        ["Record coverage", "Findings", "Run details", "AI summary"]
+    )
     with records_tab:
         status = st.multiselect("Coverage status", sorted(counts), placeholder="All statuses")
         _search(coverage.loc[coverage.Status.isin(status)] if status else coverage, "recon_coverage")
     with findings_tab:
         choices = st.multiselect("Finding type", sorted(findings.Issue.unique()), placeholder="All finding types")
         _search(findings.loc[findings.Issue.isin(choices)] if choices else findings, "recon_findings")
+    with metadata_tab:
+        source = st.selectbox("Inspect source", list(metadata["sources"]), key=f"{scope}:metadata")
+        if source is not None:
+            details = metadata["sources"][source]
+            schema = details.get("columns", [])
+            st.json({key: value for key, value in details.items() if key != "columns"})
+            if schema:
+                st.dataframe(pd.DataFrame(schema), hide_index=True, width="stretch")
+        st.download_button("Download run metadata", json.dumps(metadata, indent=2, default=str),
+                           "run.json", "application/json")
     with ai_tab:
         client = make_client(database, st.session_state.get("llm_key"))
         st.caption("Set the approved endpoint and model under Review queue → AI model settings. "
@@ -148,6 +175,17 @@ def _project(database, projects, project, preset, scope):
     if missing_inputs:
         st.warning("Saved inputs still needed: " + ", ".join(sorted(missing_inputs)))
     if len(tables) >= 2:
+        schema_changes = {}
+        for source, frame in tables.items():
+            baseline = preset.get("schemas", {}).get(source)
+            if baseline is not None:
+                added = sorted(set(frame.columns) - set(baseline))
+                removed = sorted(set(baseline) - set(frame.columns))
+                if added or removed:
+                    schema_changes[source] = {"added": added, "removed": removed}
+        if schema_changes:
+            with st.expander("Columns changed since this setup was saved", expanded=True):
+                st.json(schema_changes)
         keys, fields = _configuration(tables, preset, scope)
         expected = st.multiselect("Expected sources", list(tables),
                                   default=[source for source in preset.get("expected", tables) if source in tables],
@@ -159,15 +197,25 @@ def _project(database, projects, project, preset, scope):
         name = st.text_input("Comparison name", value=project or "", key=f"{scope}:name")
         save, run = st.columns(2)
         if save.button("Save setup", disabled=not valid or not name.strip()):
-            projects[name.strip()] = {"keys": keys, "fields": fields, "expected": expected}
+            projects[name.strip()] = {"keys": keys, "fields": fields, "expected": expected,
+                                      "schemas": {source: list(frame.columns) for source, frame in tables.items()}}
             database.set_setting("reconciliation_projects", json.dumps(projects))
             st.success(f"Saved {name.strip()}.")
         if run.button("Run comparison", disabled=not valid, type="primary"):
             coverage, findings = reconcile(tables, keys, fields, expected)
             metadata = {
+                "metadata_version": 2,
+                "run_id": str(uuid4()),
                 "project": name.strip(),
+                "schema_changes": schema_changes,
+                "rules": {
+                    "key_matching": "Exact text after trimming whitespace",
+                    "value_matching": "Exact text after trimming whitespace",
+                    "blank_handling": "Empty or whitespace-only values are treated as missing",
+                    "duplicate_handling": "Skip value comparison for keys repeated in any source",
+                },
                 "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "sources": details,
+                "sources": source_metadata(tables, keys, fields, details, expected),
                 "expected": expected,
                 "keys": keys,
                 "fields": fields,

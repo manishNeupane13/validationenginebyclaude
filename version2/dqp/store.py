@@ -101,9 +101,14 @@ class Store:
                 "SELECT s.* FROM snapshots s JOIN (SELECT source, entity, MAX(id) mid FROM snapshots GROUP BY source, entity) m "
                 "ON s.id = m.mid ORDER BY s.source, s.entity", c)
 
-    def rows(self, source: str, entity: str) -> pd.DataFrame:
+    def rows(self, source: str, entity: str, *, snapshot_id: int | None = None) -> pd.DataFrame:
         with self.conn() as c:
-            sid = c.execute("SELECT MAX(id) FROM snapshots WHERE source=? AND entity=?", (source, entity)).fetchone()[0]
+            if snapshot_id is None:
+                sid = c.execute("SELECT MAX(id) FROM snapshots WHERE source=? AND entity=?", (source, entity)).fetchone()[0]
+            else:
+                snapshot = c.execute("SELECT id FROM snapshots WHERE source=? AND entity=? AND id=?",
+                                     (source, entity, snapshot_id)).fetchone()
+                sid = snapshot[0] if snapshot else None
             if sid is None:
                 return pd.DataFrame()
             data = [json.loads(r[0]) for r in c.execute("SELECT payload FROM raw_rows WHERE snapshot_id=?", (sid,))]
