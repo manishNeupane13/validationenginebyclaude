@@ -1,0 +1,7 @@
+.venv/
+data/*.db
+data/uploads/
+data/demo/
+__pycache__/
+*.egg-info/
+.pytest_cache/
